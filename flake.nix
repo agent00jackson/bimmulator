@@ -87,6 +87,7 @@
           pkgs.bash
           pkgs.lzo
           pkgs.llvmPackages.lld
+          pkgs.llvmPackages.llvm
           pkgs.clang
           qemu
           angleServer
@@ -94,6 +95,7 @@
         text = ''
           export IDRIVE_SOURCE_ROOT="$PWD"
           export IDRIVE_QEMU="${qemu}/bin/qemu-system-arm"
+          export IDRIVE_KOMBI_QEMU="${pkgs.qemu-capricorn-m}/bin/qemu-system-mips64el"
           export IDRIVE_QNX_CLANG="${pkgs.llvmPackages.clang-unwrapped}/bin/clang"
           export IDRIVE_ANGLE_ROOT="${pkgs.angle}"
           export IDRIVE_LZO_LIBRARY="${pkgs.lzo}/lib/liblzo2.dylib"
@@ -106,6 +108,19 @@
     in
     {
       overlays.default = final: prev: {
+        qemu-capricorn-m =
+          assert prev.qemu.version == "11.1.2";
+          (prev.qemu.override {
+            # Darwin's qemu-kvm alias requires the native ARM64 target.
+            hostCpuTargets = [ "mips64el-softmmu" "aarch64-softmmu" ];
+            sdlSupport = true;
+            openGLSupport = false;
+          }).overrideAttrs (old: {
+            patches = (old.patches or [ ]) ++ [
+              ./nix/patches/capricorn-m/0001-add-capricorn-m-machine.patch
+            ];
+          });
+
         qemu-omap5 =
           assert prev.qemu.version == "11.1.2";
           (prev.qemu.override {
@@ -121,6 +136,7 @@
         default = launcher;
         idrive6 = launcher;
         qemu-omap5 = qemu;
+        qemu-capricorn-m = pkgs.qemu-capricorn-m;
         angle-egl-rpc-server = angleServer;
       };
 
@@ -140,6 +156,7 @@
             pkgs.python3Packages.pyyaml
             pkgs.clang
             pkgs.llvmPackages.clang-unwrapped
+            pkgs.llvmPackages.llvm
             pkgs.llvmPackages.lld
             pkgs.git
           ];

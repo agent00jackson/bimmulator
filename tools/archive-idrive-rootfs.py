@@ -271,9 +271,30 @@ def _profile_starter_config(
     hmi_without_comms: bool = False,
     suppress_hmi: bool = False,
     defer_otf_agent: bool = False,
+    most_sipc_stack: bool = False,
     run_packages: set[str] | None = None,
 ) -> bytes:
     root = ET.fromstring(config.read_bytes())
+    if most_sipc_stack:
+        table = root.find("EnvironmentTable")
+        count = root.find("EnvironmentCount")
+        clients = [process for process in root.iter("Process")
+                   if process.findtext("Name") == "/opt/sys/bin/most"
+                   and "--devmode=client" in (process.findtext("Args") or "")]
+        if table is None or count is None or not clients:
+            raise RuntimeError("starter.cfg lacks the environment table or native MOST client")
+        number = str(max(int(env.findtext("Number")) for env in table.findall("Environment")) + 1)
+        environment = ET.SubElement(table, "Environment")
+        for tag, value in (("Number", number), ("Name", "IDRIVE_MOST_SIPC_STACK"),
+                           ("EnvName", "SOCK"), ("Value", "/idrive"), ("Overwrite", "1")):
+            ET.SubElement(environment, tag).text = value
+        count.text = str(len(table.findall("Environment")))
+        for process in clients:
+            high_mem = process.find("HighMem")
+            index = list(process).index(high_mem) if high_mem is not None else len(process)
+            entry = ET.Element("RequiresEnvironment")
+            entry.text = number
+            process.insert(index, entry)
     found = set()
     for package in root.iter("Package"):
         name = package.findtext("Name")
@@ -405,6 +426,7 @@ def archive_rootfs(
     hmi_without_comms: bool = False,
     suppress_hmi: bool = False,
     defer_otf_agent: bool = False,
+    most_sipc_stack: bool = False,
     hmi_coding_id6l: bool = False,
     hmi_coding_cid_1440: bool = False,
     hmi_coding_cid_touch: bool = False,
@@ -437,6 +459,8 @@ def archive_rootfs(
         fingerprint.update(b"1" if hmi_without_comms else b"0")
         fingerprint.update(b"1" if suppress_hmi else b"0")
         fingerprint.update(b"1" if defer_otf_agent else b"0")
+        if most_sipc_stack:
+            fingerprint.update(b"most-sipc-private-stack\0")
         fingerprint.update(b"1" if hmi_coding_id6l else b"0")
         if hmi_coding_id6l:
             fingerprint.update(b"hmi-id6-light-overlay\0")
@@ -616,6 +640,7 @@ def archive_rootfs(
             hmi_without_comms=hmi_without_comms,
             suppress_hmi=suppress_hmi,
             defer_otf_agent=defer_otf_agent,
+            most_sipc_stack=most_sipc_stack,
             run_packages=(
                 GRAPHICS_RUN_PACKAGES
                 if emulator_profile == "omap5-graphics"
@@ -829,6 +854,8 @@ def main() -> int:
         action="store_true",
         help="stop the starter-managed BMW OTF agent so a direct launch can start it after networking",
     )
+    parser.add_argument("--most-sipc-stack", action="store_true",
+                        help="route stock MOST clients through the emulator's isolated IPv4 stack")
     parser.add_argument(
         "--hmi-coding-id6-light",
         action="store_true",
@@ -885,6 +912,7 @@ def main() -> int:
             hmi_without_comms=args.hmi_without_comms,
             suppress_hmi=args.suppress_hmi,
             defer_otf_agent=args.defer_otf_agent,
+            most_sipc_stack=args.most_sipc_stack,
             hmi_coding_id6l=args.hmi_coding_id6_light,
             hmi_coding_cid_1440=args.hmi_coding_cid_1440,
             hmi_coding_cid_touch=args.hmi_coding_cid_touch,

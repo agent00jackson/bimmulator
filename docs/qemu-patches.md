@@ -22,7 +22,7 @@ ordered series again:
 ```sh
 git worktree add /tmp/qemu-patch-work <qemu-base>
 cd /tmp/qemu-patch-work
-git am /path/to/idrive6/nix/patches/qemu/*.patch
+git am /path/to/idrive6-share/nix/patches/qemu/*.patch
 # Rebase or amend the four topic commits here.
 git format-patch --no-signature --output-directory /tmp/idrive6-patches \
   <qemu-base>..HEAD
@@ -42,3 +42,11 @@ focused test and a description in the corresponding patch commit.
 The machine only implements the modeled registers and transfer paths covered
 by the tests. Probe options must remain explicit about assumptions and must
 not suggest full PowerVR execution.
+
+
+## Capricorn-M
+
+The Bosch 6WB graphics processor uses the separate `qemu-capricorn-m`
+package. Apply the patch in `nix/patches/capricorn-m/` to the pinned QEMU
+base on its own. The OMAP5430 series and the head-unit launcher use their
+existing package. [6WB launch instructions](../README.md#experimental-6wb-cluster-and-hud)

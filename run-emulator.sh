@@ -19,6 +19,7 @@ SGX_PRIMARY_VLDST_PROBE="${IDRIVE_SGX_PRIMARY_VLDST_PROBE:-0}"
 SGX_SYNC_WDF_PROBE="${IDRIVE_SGX_SYNC_WDF_PROBE:-0}"
 SGX_VBW_PROBE="${IDRIVE_SGX_VBW_PROBE:-0}"
 CDC_NETWORK="${IDRIVE_QEMU_CDC_NETWORK:-1}"
+MOST_SIPC_HOST_PORT="${IDRIVE_MOST_SIPC_HOST_PORT:-}"
 NETWORK_PCAP="${IDRIVE_QEMU_NETWORK_PCAP:-}"
 GUESTFWD_LOG="${IDRIVE_QEMU_GUESTFWD_LOG:-}"
 GLES_RPC_SMOKE="${IDRIVE_GLES_RPC_SMOKE:-0}"
@@ -158,6 +159,23 @@ fi
 # The generated QNX startup helper reads this setting while the launcher keeps
 # its normalized default in CDC_NETWORK. Pass the effective value downstream.
 export IDRIVE_QEMU_CDC_NETWORK="$CDC_NETWORK"
+if [[ -n "$MOST_SIPC_HOST_PORT" ]]; then
+  if [[ "$CDC_NETWORK" != "1" || "$EMULATOR_PROFILE" != "omap5-graphics" ||
+        "$ANGLE_EGL_HMI" != "1" || "${IDRIVE_HMI_FORCE_START:-0}" != "1" ||
+        -z "${IDRIVE_ROOTFS_TREE:-}" || -n "$QEMU_LOADVM" ]]; then
+    echo "IDRIVE_MOST_SIPC_HOST_PORT requires the native HMI profile and its isolated CDC stack." >&2
+    exit 1
+  fi
+  if [[ ! "$MOST_SIPC_HOST_PORT" =~ ^[0-9]{1,5}$ ]] ||
+     (( 10#$MOST_SIPC_HOST_PORT < 1 || 10#$MOST_SIPC_HOST_PORT > 65535 )); then
+    echo "IDRIVE_MOST_SIPC_HOST_PORT must be a TCP port between 1 and 65535." >&2
+    exit 1
+  fi
+  if [[ "$QEMU_RPC_FORWARDER_SCRIPT" == *,* ]]; then
+    echo "The MOST SIPC forwarder path must not contain commas." >&2
+    exit 1
+  fi
+fi
 if [[ -n "$NETWORK_PCAP" ]]; then
   if [[ "$CDC_NETWORK" != "1" ||
         ( "$EMULATOR_PROFILE" != "omap5" && "$EMULATOR_PROFILE" != "omap5-graphics" ) ]]; then
@@ -1028,6 +1046,10 @@ if [[ -n "${IDRIVE_ROOTFS_TREE:-}" && -z "$QEMU_LOADVM" ]]; then
   ROOT_ARCHIVE="${IDRIVE_ROOT_ARCHIVE_OUTPUT:-$ROOT_ARCHIVE}"
   ROOTED_IMAGE="$WORK_DIR/boot-root.ifs"
   ARCHIVE_PROFILE_ARGS=(--gzip --cache-unchanged --emulator-profile "$EMULATOR_PROFILE")
+  if [[ -n "$MOST_SIPC_HOST_PORT" ]]; then
+    ROOT_ARCHIVE="${ROOT_ARCHIVE%.tar.gz}-most-sipc.tar.gz"
+    ARCHIVE_PROFILE_ARGS+=(--most-sipc-stack)
+  fi
   if [[ -n "${IDRIVE_STARTER_VARIANT:-}" && "${IDRIVE_SOFTWARE_SCREEN_PROBE:-0}" == "1" ]]; then
     ARCHIVE_PROFILE_ARGS+=(--software-screen-variant)
   fi
@@ -1420,12 +1442,16 @@ if [[ "$CDC_NETWORK" == "1" &&
       ( "$EMULATOR_PROFILE" == "omap5" || "$EMULATOR_PROFILE" == "omap5-graphics" ) ]]; then
   if [[ "$GLES_RPC_SMOKE" == "1" || "$ANGLE_EGL_RPC_SMOKE" == "1" || "$ANGLE_EGL_HMI" == "1" ]]; then
     GUESTFWD_OPTIONS=""
+    if [[ -n "$MOST_SIPC_HOST_PORT" ]]; then
+      GUESTFWD_OPTIONS=",guestfwd=tcp:160.48.199.253:5555-cmd:python3 \"$QEMU_RPC_FORWARDER_SCRIPT\" 127.0.0.1 $MOST_SIPC_HOST_PORT"
+      echo "Guest MOST SIPC port 5555 forwards to host loopback TCP $MOST_SIPC_HOST_PORT."
+    fi
     if [[ "$ANGLE_EGL_MAILBOX" == "0" ]]; then
       GUESTFWD_COMMAND="python3 \"$QEMU_RPC_FORWARDER_SCRIPT\" 127.0.0.1 41416"
       if [[ -n "$GUESTFWD_LOG" ]]; then
         GUESTFWD_COMMAND+=" \"$GUESTFWD_LOG\""
       fi
-      GUESTFWD_OPTIONS=",guestfwd=tcp:160.48.199.253:41416-cmd:$GUESTFWD_COMMAND"
+      GUESTFWD_OPTIONS+=",guestfwd=tcp:160.48.199.253:41416-cmd:$GUESTFWD_COMMAND"
       echo "Guest TCP port 41416 starts a per-connection Python bridge to the loopback-only host ANGLE RPC server."
       if [[ -n "$GUESTFWD_LOG" ]]; then
         echo "QEMU guestfwd child events will be logged to $GUESTFWD_LOG."

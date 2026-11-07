@@ -2,8 +2,8 @@
 
 ## QEMU
 
-The patches in `nix/patches/qemu/` modify QEMU 11.1.2 source fetched by the
-pinned Nix package. QEMU is distributed under GPL-2.0-or-later. The upstream
+The OMAP5430 and Capricorn-M patches under `nix/patches/` modify QEMU
+11.1.2 source fetched by the pinned Nix package. QEMU is distributed under GPL-2.0-or-later. The upstream
 source and its notices are not copied into this repository. The license text
 is included in [`licenses/GPL-2.0.txt`](licenses/GPL-2.0.txt).
 

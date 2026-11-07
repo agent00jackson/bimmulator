@@ -3,14 +3,22 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import hashlib
 import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
+import tempfile
+import time
 import uuid
+
+
+from kombi_firmware import stage_kombi
+from kombi_rpm import RAM_SIZE
 
 
 PACKAGES = {
@@ -18,7 +26,8 @@ PACKAGES = {
     "swfl_0000271a.bin.007_030_001": "c313315a499b2c0d49b90e541e74295cb45aebd46b6552a72afbe1dcdc06188d",
     "swfl_00002720.bin.007_030_001": "a9222a2432f5318f06aec563321832a3ba41fde60a4692cbb0cf34317b2f37e1",
 }
-EXPECTED = {"psdzdata", "cacheDir", "display", "cpuCount"}
+MODULES = ("head-unit", "6wb")
+EXPECTED = {"psdzdata", "cacheDir", "display", "cpuCount", "modules"}
 RELEASE = "x20511i-007_030_001-v1"
 STAGING_SCHEMA = 2
 
@@ -48,6 +57,11 @@ def checked_config(project: Path, file: Path, nix: str) -> dict:
     extra = set(config) - EXPECTED
     if extra:
         raise ValueError(f"Unknown configuration keys: {', '.join(sorted(extra))}")
+    modules = config.setdefault("modules", list(MODULES))
+    if (not isinstance(modules, list) or not modules
+            or any(module not in MODULES for module in modules)
+            or len(set(modules)) != len(modules)):
+        raise ValueError('modules must select "head-unit", "6wb", or both without duplicates.')
     psdz = config.get("psdzdata")
     if not isinstance(psdz, str) or not Path(psdz).is_absolute():
         raise ValueError("Set psdzdata to an absolute path to the extracted PSdZData directory.")
@@ -212,31 +226,10 @@ def publish_generation(final: Path, generation: Path) -> Path:
     return final
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, help="TOML config; defaults to ./idrive6.toml")
-    parser.add_argument("--prepare-only", action="store_true", help="validate and stage firmware without starting QEMU")
-    args = parser.parse_args()
-    project = Path(os.environ.get("IDRIVE_SOURCE_ROOT", Path.cwd())).resolve()
-    config_file = args.config or (project / "idrive6.toml")
-    if not config_file.is_absolute():
-        config_file = Path.cwd() / config_file
-    nix = os.environ.get("IDRIVE_NIX", "nix")
-    try:
-        config = checked_config(project, config_file.resolve(), nix)
-        package_paths, digests = verify_packages(Path(config["psdzdata"]))
-        cache = Path(config["cacheDir"])
-        firmware = stage(project, cache, package_paths, digests)
-    except (ValueError, OSError, subprocess.CalledProcessError) as error:
-        print(f"idrive6: {error}", file=sys.stderr)
-        return 1
-    if args.prepare_only:
-        print(f"Firmware verified and staged. Launch with: nix run .#idrive6 -- --config {config_file}")
-        return 0
-
+def head_unit_command(project, config, firmware):
     environment = os.environ.copy()
     environment.update({
-        "IDRIVE_CACHE_DIR": str(cache),
+        "IDRIVE_CACHE_DIR": config["cacheDir"],
         "IDRIVE_BOOT_IMAGE": str(firmware / "firmware/sda2/boot1.ifs"),
         "IDRIVE_ROOTFS_TREE": str(firmware / "rootfs"),
         "IDRIVE_REALIZED_ROOTFS": str(firmware / "rootfs"),
@@ -249,7 +242,115 @@ def main() -> int:
         "IDRIVE_QNX_HMI_WEB_INSPECTOR": "0",
     })
     profile = project / "profiles/f32-x20511i-id6-light.json"
-    os.execvpe(sys.executable, [sys.executable, str(project / "tools/run-hmi-profile.py"), str(profile)], environment)
+    command = [sys.executable, str(project / "tools/run-hmi-profile.py"), str(profile),
+               "--set", f"IDRIVE_QEMU_CPUS={config['cpuCount']}",
+               "--set", f"IDRIVE_TCG_THREAD={environment['IDRIVE_TCG_THREAD']}"]
+    return command, environment
+
+
+def stop_process(process):
+    if process.poll() is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+        process.wait(timeout=5)
+    except ProcessLookupError:
+        process.wait()
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+
+
+def run_kombi_session(project, cache, config, images, head_unit):
+    kombi_qemu = os.environ.get("IDRIVE_KOMBI_QEMU", "qemu-system-mips64el")
+    runs = cache / "runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    run = Path(tempfile.mkdtemp(prefix="6wb-", dir=runs))
+    ram = run / "vehicle.ram"
+    gss, flash_config, graphics = map(str, images)
+    display = "sdl" if config["display"] == "cocoa" else "none"
+
+    with ExitStack() as cleanup:
+        qmp = run / "qmp.sock"
+        if len(os.fsencode(qmp)) >= 104:
+            sockets = cleanup.enter_context(tempfile.TemporaryDirectory(prefix="idrive6-6wb-", dir="/tmp"))
+            qmp = Path(sockets) / "qmp.sock"
+        print(f"6WB run artifacts: {run}", flush=True)
+        print(f"6WB QEMU management socket: {qmp}", flush=True)
+
+        def start(command, env=None):
+            process = subprocess.Popen(command, env=env, start_new_session=True)
+            cleanup.callback(stop_process, process)
+            return process
+
+        kombi = start([sys.executable, str(project / "tools/kombi-gss-probe.py"), gss,
+                       "--config", flash_config, "--graphics-data", graphics, "--qemu", kombi_qemu,
+                       "--kss-replay", "--log", str(run / "qemu.log"), "--vehicle-ram", str(ram),
+                       "--display", display, "--qmp-socket", str(qmp)])
+
+        deadline = time.monotonic() + 20
+        while not (ram.is_file() and ram.stat().st_size == RAM_SIZE and qmp.is_socket()):
+            if kombi.poll() is not None or time.monotonic() >= deadline:
+                raise RuntimeError(f"6WB failed to start; see {run / 'qemu.log'}")
+            time.sleep(0.05)
+
+        simulator = start([sys.executable, str(project / "tools/kombi-sim.py"), "--port", "0",
+                           "--vehicle-ram", str(ram)])
+        processes = {"6WB": kombi, "vehicle simulator": simulator}
+        if head_unit:
+            command, env = head_unit
+            processes["head unit"] = start(command, env)
+        while True:
+            for module, process in processes.items():
+                if (status := process.poll()) is not None:
+                    if status:
+                        raise RuntimeError(f"{module} exited with status {status}")
+                    if process is simulator:
+                        raise RuntimeError("vehicle simulator exited")
+                    return 0
+            time.sleep(0.1)
+
+
+def interrupt_session(_signum, _frame):
+    raise KeyboardInterrupt
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, help="TOML config; defaults to ./idrive6.toml")
+    parser.add_argument("--prepare-only", action="store_true", help="validate and stage firmware without starting QEMU")
+    args = parser.parse_args()
+    project = Path(os.environ.get("IDRIVE_SOURCE_ROOT", Path.cwd())).resolve()
+    config_file = args.config or (project / "idrive6.toml")
+    if not config_file.is_absolute():
+        config_file = Path.cwd() / config_file
+    nix = os.environ.get("IDRIVE_NIX", "nix")
+    try:
+        config = checked_config(project, config_file.resolve(), nix)
+        modules = config["modules"]
+        cache = Path(config["cacheDir"])
+        psdzdata = Path(config["psdzdata"])
+        head_unit = None
+        kombi_images = None
+        if "head-unit" in modules:
+            package_paths, digests = verify_packages(psdzdata)
+            firmware = stage(project, cache, package_paths, digests)
+            head_unit = head_unit_command(project, config, firmware)
+        if "6wb" in modules:
+            kombi_images = stage_kombi(psdzdata, cache)
+        if args.prepare_only:
+            print(f"Firmware verified and staged for {', '.join(modules)}.")
+            return 0
+        if kombi_images:
+            signal.signal(signal.SIGTERM, interrupt_session)
+            return run_kombi_session(project, cache, config, kombi_images, head_unit)
+        command, env = head_unit
+        os.execvpe(command[0], command, env)
+    except KeyboardInterrupt:
+        return 130
+    except (ValueError, OSError, RuntimeError, subprocess.CalledProcessError) as error:
+        print(f"idrive6: {error}", file=sys.stderr)
+        return 1
     return 127
 
 
