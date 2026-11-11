@@ -16,6 +16,7 @@ development shell. Vita3K is distributed under GPL-2.0-or-later. Its license
 text is included in [`licenses/GPL-2.0.txt`](licenses/GPL-2.0.txt); the upstream
 source itself remains external to this repository.
 
-The launcher also depends on QEMU, ANGLE, and other packages built from the
-pinned Nixpkgs revision. Their source licenses and notices remain with those
+The launcher also depends on QEMU, ANGLE (macOS), Mesa and libglvnd (Linux),
+and other packages built from the pinned Nixpkgs revision. Their source
+licenses and notices remain with those
 upstream packages; this repository does not vendor their source.
