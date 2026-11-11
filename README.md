@@ -6,9 +6,13 @@ directory containing the verified NBTevo X20511I packages.
 
 ## Quick start
 
-The supported release host is Apple silicon macOS with Nix flakes enabled.
-Clone the repository, copy the example config, and set `psdzdata` to the
-absolute path of your extracted PSdZData directory:
+The Nix flake provides Apple silicon macOS (`aarch64-darwin`, ANGLE Metal)
+and Linux x86_64 (`x86_64-linux`, Mesa software EGL) host packages. Linux host
+support is experimental: host compilation and firmware-free EGL tests do not
+qualify the complete firmware boot/UI path. The guest remains ARM/QNX.
+
+With Nix flakes enabled, clone the repository, copy the example config, and
+set `psdzdata` to the absolute path of your extracted PSdZData directory:
 
 ```sh
 cp idrive6.example.toml idrive6.toml
@@ -43,10 +47,16 @@ The launcher extracts and verifies the selected firmware, then reuses the
 verified cache on later runs. By default the cache lives under
 `$XDG_CACHE_HOME/idrive6` or `~/.cache/idrive6`.
 
-The optional settings are `cacheDir`, `display` (`cocoa` or `none`), and
-`cpuCount` (`1` or `2`). Keep PSdZData and the cache outside the repository;
-the launcher rejects paths inside the checkout so local firmware and cache
-files never enter the Nix source or store. Both paths may contain spaces.
+The optional settings are `cacheDir`, `display`, and `cpuCount` (`1` or `2`).
+The display defaults to `cocoa` on macOS and `gtk` on Linux; `none` selects
+headless operation on either host. Native Linux windows need a working X11
+or Wayland desktop. The 6WB uses SDL windows for either native GUI selection.
+The Mesa server itself uses surfaceless EGL, including with `display = "none"`;
+it does not need a desktop or GPU. Nix pins its Mesa vendor and software-driver
+paths, so the Linux package does not depend on a system-wide graphics setup.
+Keep PSdZData and the cache outside the repository; the launcher rejects paths
+inside the checkout so local firmware and cache files never enter the Nix
+source or store. Both paths may contain spaces.
 The launcher reads `./idrive6.toml` by default; pass `--config /path/to/file`
 to either command to use another config.
 
@@ -59,7 +69,7 @@ T sends Communication, N sends Navigation, and V sends Map. Click the QEMU
 window first to give it keyboard focus.
 
 Each run gets its own directory below the cache's `runs/` folder. It contains
-the guest serial stream, QEMU debug log, ANGLE server log, and a manifest of
+the guest serial stream, QEMU debug log, host EGL server log, and a manifest of
 the source and firmware inputs. OTF recording, network packet dumps, ANGLE
 shader/draw/resource captures, `pdebug`, and the web inspector remain off by
 default. For an already staged cache, set `IDRIVE_CACHE_DIR` to the same path
@@ -80,8 +90,10 @@ nix develop -c python3 tools/run-hmi-profile.py \
 The F32 home interface, text, controller input, and CID touch run through
 BMW's native HmiMain3D and QNX Screen. QEMU supplies an OMAP5430 board model
 and a software display path. The PowerVR SGX540 is not fully emulated; the
-host ANGLE bridge implements the graphics calls used by the tested HMI path.
-Other vehicle variants and Linux hosts are not part of the verified release.
+host EGL bridge implements the graphics calls used by the tested HMI path.
+The macOS path continues to use ANGLE; Linux uses Mesa with the same version-3
+RPC and unchanged QNX provider. Other vehicle variants and the full Linux
+firmware boot/UI path are not part of the verified release.
 
 ## Developer notes
 
@@ -113,6 +125,43 @@ nix develop -c python3 -m unittest discover -s tests -v
 The firmware staging diagnostics use the same verified input as the launcher;
 `nix run .#idrive6 -- --prepare-only` checks and stages it without starting
 QEMU. The device tests use QEMU directly and need no firmware or GUI.
+
+### Linux host EGL checks
+
+To build just the Mesa bridge and exercise its real version-3 RPC path without
+QEMU, firmware, a desktop, or a GPU:
+
+```sh
+mkdir -p build
+nix build .#mesa-egl-rpc-server --out-link build/mesa-host
+IDRIVE_TEST_EGL_SERVER="$PWD/build/mesa-host/bin/mesa-egl-rpc-server" \
+  python3 -m unittest discover -s tests -p test_egl_rpc_server.py -v
+```
+
+These opt-in tests start their own localhost server on a temporary port. They
+check EGL initialization, an ES2 pbuffer clear/readback, GL errors, malformed
+frames, and protocol-version rejection. They do not test QNX boot or the HMI.
+The host package/target matrix is evaluated by `test_flake_hosts.py` when Nix
+is available; the EGL tests skip unless `IDRIVE_TEST_EGL_SERVER` is set.
+
+Without Nix, the host-only builder uses a C++17 compiler and `pkg-config` for
+EGL 1.5/GLES2 development files; install Mesa's software EGL runtime using
+your distribution's package manager. Then run:
+
+```sh
+tools/build-mesa-egl-rpc-server.sh build/mesa-egl-rpc-server
+LIBGL_ALWAYS_SOFTWARE=1 \
+  IDRIVE_TEST_EGL_SERVER="$PWD/build/mesa-egl-rpc-server" \
+  python3 -m unittest discover -s tests -p test_egl_rpc_server.py -v
+```
+
+`IDRIVE_HOST_CXX` (then `CXX`) selects the compiler executable; `PKG_CONFIG`
+selects the dependency-query executable. Standard pkg-config search/sysroot
+variables are respected. Shell command strings and escaped-space dependency
+flags are not supported. This standalone builder does not supply patched QEMU,
+QNX cross-build tools, or a firmware launcher; use the Nix entry point above
+for the composed host environment. Existing ANGLE-specific diagnostic builders
+remain macOS/ANGLE tools, rather than implicitly switching backends.
 
 ## Experimental 6WB cluster and HUD
 

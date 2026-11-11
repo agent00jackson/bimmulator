@@ -7,8 +7,9 @@ modules = ["head-unit", "6wb"]
 # Optional. Defaults to $XDG_CACHE_HOME/idrive6 or ~/.cache/idrive6.
 # cacheDir = "/path/to/idrive6-cache"
 
-# Optional: cocoa (default) or none for headless runs.
-# display = "cocoa"
+# Optional: cocoa on macOS (default), gtk on Linux (default), or none on either.
+# The 6WB uses SDL windows whenever the display is not none.
+# display = "none"
 
 # Optional: 2 (default) or 1 for the slower single-core compatibility mode.
 # cpuCount = 2

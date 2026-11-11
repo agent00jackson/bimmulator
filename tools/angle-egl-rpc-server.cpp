@@ -3,7 +3,9 @@
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
+#if !defined(IDRIVE_USE_MESA)
 #include <EGL/eglext_angle.h>
+#endif
 #include <GLES2/gl2.h>
 
 #include "angle-egl-rpc.h"
@@ -613,6 +615,10 @@ bool write_all_at(int fd, const unsigned char *data, std::size_t size,
 bool ensure_display()
 {
     if (g_display_initialized) return true;
+#if defined(IDRIVE_USE_MESA)
+    constexpr const char *backend_name = "mesa-surfaceless";
+    g_display = eglGetPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA, nullptr, nullptr);
+#else
 #if defined(__APPLE__)
     constexpr EGLint backend = EGL_PLATFORM_ANGLE_TYPE_METAL_ANGLE;
     constexpr const char *backend_name = "metal";
@@ -625,6 +631,7 @@ bool ensure_display()
         EGL_NONE,
     };
     g_display = eglGetPlatformDisplay(EGL_PLATFORM_ANGLE_ANGLE, nullptr, attributes);
+#endif
     if (g_display == EGL_NO_DISPLAY ||
         eglInitialize(g_display, &g_major, &g_minor) != EGL_TRUE ||
         eglBindAPI(EGL_OPENGL_ES_API) != EGL_TRUE) {
@@ -2897,7 +2904,9 @@ int serve_tcp(unsigned int port)
     }
     std::fprintf(stderr, "ANGLE_EGL_RPC_LISTEN address=127.0.0.1 port=%u backend=%s egl=%d.%d depth=24 guest_ram=%s guest_ram_bytes=%llu\n",
                  port,
-#if defined(__APPLE__)
+#if defined(IDRIVE_USE_MESA)
+                 "mesa-surfaceless",
+#elif defined(__APPLE__)
                  "metal",
 #else
                  "vulkan",

@@ -90,16 +90,17 @@ def main() -> int:
 
     qmp_socket_template = paths.get("IDRIVE_QEMU_QMP_SOCKET", "")
     qmp_socket = env.get("IDRIVE_QEMU_QMP_SOCKET", "")
+    qmp_path_limit = 104 if sys.platform == "darwin" else 108 if sys.platform.startswith("linux") else None
     if (
-        sys.platform == "darwin"
+        qmp_path_limit is not None
         and "{run_dir}" in qmp_socket_template
         and "IDRIVE_QEMU_QMP_SOCKET" not in overrides
-        and len(os.fsencode(qmp_socket)) >= 104
+        and len(os.fsencode(qmp_socket)) >= qmp_path_limit
     ):
         short_name = hashlib.sha256(os.fsencode(qmp_socket)).hexdigest()[:12]
         env["IDRIVE_QEMU_QMP_SOCKET"] = f"/tmp/idrive6-qmp-{short_name}.sock"
         print(
-            "QMP socket path exceeds macOS's 104-byte limit; using "
+            f"QMP socket path exceeds the host's {qmp_path_limit}-byte limit; using "
             f"{env['IDRIVE_QEMU_QMP_SOCKET']}",
             flush=True,
         )
