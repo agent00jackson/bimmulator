@@ -10,7 +10,8 @@ from unittest.mock import patch
 
 TOOLS = Path(__file__).resolve().parents[1] / "tools"
 sys.path.insert(0, str(TOOLS))
-checked_config = runpy.run_path(str(TOOLS / "idrive6-launch.py"))["checked_config"]
+LAUNCHER = runpy.run_path(str(TOOLS / "idrive6-launch.py"))
+checked_config = LAUNCHER["checked_config"]
 
 
 class LaunchConfigTests(unittest.TestCase):
